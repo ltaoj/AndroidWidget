@@ -323,4 +323,12 @@ public class SwipeLayout extends FrameLayout {
     public void close() {
         close(true);
     }
+
+    public void setOnSwipeChangeLintener(OnSwipeChangeLintener onSwipeChangeLintener) {
+        this.onSwipeChangeLintener = onSwipeChangeLintener;
+    }
+
+    public SwipeState getSwipState() {
+        return mSwipState;
+    }
 }

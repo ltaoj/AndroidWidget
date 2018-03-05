@@ -15,7 +15,7 @@ ext {
     siteUrl = 'https://github.com/ltaoj/AndroidWidget'
     gitUrl = 'https://github.com/ltaoj/AndroidWidget.git'
 
-    libraryVersion = '0.9.3'
+    libraryVersion = '0.9.5'
 
     developerId = 'ltaoj'
     developerName = 'taojiangli'
