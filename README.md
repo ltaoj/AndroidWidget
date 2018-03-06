@@ -1,5 +1,6 @@
 # AndroidWidget
 Useful Android Widget Library
+1. SwipeLayout 用于实现RecyclerView实现Item侧滑效果
 
 # 效果图
 
