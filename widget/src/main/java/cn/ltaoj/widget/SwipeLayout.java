@@ -7,6 +7,7 @@ import android.support.annotation.Nullable;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.widget.ViewDragHelper;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -99,6 +100,16 @@ public class SwipeLayout extends FrameLayout {
             return mRange;
         }
 
+        /**
+         * 重载父类方法，限制垂直拖动区域为0
+         * @param child
+         * @return
+         */
+        @Override
+        public int getViewVerticalDragRange(View child) {
+            return 0;
+        }
+
         @Override
         public boolean tryCaptureView(View child, int pointerId) {
             return true;
@@ -115,11 +126,23 @@ public class SwipeLayout extends FrameLayout {
             return left;
         }
 
+        /**
+         * 重载父类方法, 垂直固定边界为mFrontLayout的上边界
+         * @param child
+         * @param top
+         * @param dy
+         * @return
+         */
+        @Override
+        public int clampViewPositionVertical(View child, int top, int dy) {
+            return mFrontLayout.getTop();
+        }
+
         @Override
         public void onViewReleased(View releasedChild, float xvel, float yvel) {
-            if (mFrontLayout.getLeft() > -(mRange / mBackLayout.getChildCount())) {
+            if (mFrontLayout.getLeft() > -(mRange / (mBackLayout.getChildCount() + 1))) {
                 close();
-            } else if (mFrontLayout.getLeft() < -(mRange / mBackLayout.getChildCount())) {
+            } else if (mFrontLayout.getLeft() < -(mRange / (mBackLayout.getChildCount() + 1))) {
                 open();
             }
         }
@@ -197,6 +220,7 @@ public class SwipeLayout extends FrameLayout {
         mHeight = h;
         // 可拖动范围
         mRange = mBackLayout.getMeasuredWidth();
+        Log.i(TAG, "onSizeChanged: mWidth=" + mWidth + " mHeight:" + mHeight + " mRange:" + mRange);
     }
 
     @Override
@@ -216,6 +240,7 @@ public class SwipeLayout extends FrameLayout {
 
         // 將控件前置
         bringChildToFront(mFrontLayout);
+        Log.i(TAG, "layoutInit: mFrontWidth=" + mFrontLayout.getWidth() + " mFrontHeight=" + mFrontLayout.getHeight());
     }
 
     private Rect computeFrontRect(boolean isOpen) {
@@ -234,10 +259,17 @@ public class SwipeLayout extends FrameLayout {
         return new Rect(frontRect.right, frontRect.top, frontRect.right + mRange, frontRect.bottom);
     }
 
+    @Override
+    public boolean onInterceptHoverEvent(MotionEvent event) {
+        return false;
+    }
+
     // 是否截断触摸事件
     @Override
     public boolean onInterceptTouchEvent(MotionEvent ev) {
-        return mViewDragHelper.shouldInterceptTouchEvent(ev);
+        boolean b = mViewDragHelper.shouldInterceptTouchEvent(ev);
+        Log.i(TAG, "onInterceptTouchEvent: shouldInterceptTouchEvent=" + b);
+        return b;
     }
 
     @Override
@@ -250,6 +282,7 @@ public class SwipeLayout extends FrameLayout {
 //                }
 //                break;
 //        }
+        Log.i(TAG, "onTouchEvent: proccess touch event");
         mViewDragHelper.processTouchEvent(event);
         return true;
     }
@@ -266,7 +299,7 @@ public class SwipeLayout extends FrameLayout {
     private void dispatchEvent() {
         SwipeState preState = mSwipState;
         mSwipState = updateState();
-
+        Log.i(TAG, "dispatchEvent: swipeState=" + mSwipState);
         if (onSwipeChangeLintener != null) {
             onSwipeChangeLintener.onSwiping(this);
             if (mSwipState != preState) {
@@ -295,7 +328,9 @@ public class SwipeLayout extends FrameLayout {
     public void open(boolean isSmooth) {
         if (isSmooth) {
             int finalLeft = -mRange;
-            boolean b = mViewDragHelper.smoothSlideViewTo(this, finalLeft, this.getTop());
+            // 使用smoothSlideViewTo方式时注意第一个参数传入的应该为子View，如果传入this指针那么不会起作用！！！
+            boolean b = mViewDragHelper.smoothSlideViewTo(mFrontLayout, finalLeft, mFrontLayout.getTop());
+            Log.i(TAG, "open: b=" + b);
             if (b) {
                 ViewCompat.postInvalidateOnAnimation(this);
             }
@@ -311,7 +346,8 @@ public class SwipeLayout extends FrameLayout {
     public void close(boolean isSmooth) {
         if (isSmooth) {
             int finalLeft = 0;
-            boolean b = mViewDragHelper.smoothSlideViewTo(this, finalLeft, getTop());
+            boolean b = mViewDragHelper.smoothSlideViewTo(mFrontLayout, finalLeft, mFrontLayout.getTop());
+            Log.i(TAG, "close: b=" + b);
             if (b) {
                 ViewCompat.postInvalidateOnAnimation(this);
             }
