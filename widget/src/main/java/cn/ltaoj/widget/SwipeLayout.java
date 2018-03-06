@@ -242,14 +242,14 @@ public class SwipeLayout extends FrameLayout {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        int action = event.getAction();
-        switch (action) {
-            case MotionEvent.ACTION_UP:
-                if (mSwipState == SwipeState.CLOSE || mSwipState == SwipeState.OPEN) {
-                    return false;
-                }
-                break;
-        }
+//        int action = event.getAction();
+//        switch (action) {
+//            case MotionEvent.ACTION_UP:
+//                if (mSwipState == SwipeState.CLOSE || mSwipState == SwipeState.OPEN) {
+//                    return false;
+//                }
+//                break;
+//        }
         mViewDragHelper.processTouchEvent(event);
         return true;
     }
@@ -295,7 +295,7 @@ public class SwipeLayout extends FrameLayout {
     public void open(boolean isSmooth) {
         if (isSmooth) {
             int finalLeft = -mRange;
-            boolean b = mViewDragHelper.smoothSlideViewTo(this, finalLeft, 0);
+            boolean b = mViewDragHelper.smoothSlideViewTo(this, finalLeft, this.getTop());
             if (b) {
                 ViewCompat.postInvalidateOnAnimation(this);
             }
@@ -311,7 +311,7 @@ public class SwipeLayout extends FrameLayout {
     public void close(boolean isSmooth) {
         if (isSmooth) {
             int finalLeft = 0;
-            boolean b = mViewDragHelper.smoothSlideViewTo(this, finalLeft, 0);
+            boolean b = mViewDragHelper.smoothSlideViewTo(this, finalLeft, getTop());
             if (b) {
                 ViewCompat.postInvalidateOnAnimation(this);
             }
