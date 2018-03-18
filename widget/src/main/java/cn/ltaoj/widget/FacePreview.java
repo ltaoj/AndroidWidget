@@ -1,5 +1,7 @@
 package cn.ltaoj.widget;
 
+import android.animation.PropertyValuesHolder;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Bitmap;
@@ -18,9 +20,12 @@ import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.animation.AccelerateDecelerateInterpolator;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Timer;
+import java.util.TimerTask;
 
 /**
  * Created by ltaoj on 2018/3/18 1:23.
@@ -40,7 +45,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     private static final int DEFAULT_CORNER_COLOR = Color.GREEN;
 
     // 默认边角线宽度
-    private static final float DEFAULT_CORNER_WIDTH = 10F;
+    private static final float DEFAULT_CORNER_WIDTH = 20F;
 
     // 设置矩形边框颜色
     private static final int DEFAULT_BORDER_COLOR = Color.WHITE;
@@ -79,6 +84,8 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     private float mTipTextSize;
     // 提示文字颜色
     private int mTipTextColor;
+    // 提示文字顶部与矩形区域底部的距离
+    private int textMarginRect = 50;
 
     // 是否显示提示文字
     private boolean mShowTip;
@@ -102,15 +109,20 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     private Paint mRectPaint;
     // 边角绘制画笔
     private Paint mCrnPaint;
-    // 保存绘制边框和边角之后的副本
-    private Bitmap bitmapCache = null;
     // 扫描线绘制画笔
     private Paint mScanPaint;
+    // 提示文字绘制画笔
+    private Paint mTextPaint;
 
     // 绘制线程
     private Thread mDrawTread;
     // 表示线程运行状态
     private boolean isDrawRun;
+
+    // 扫描动画
+    private ValueAnimator mScanAnimator;
+    // 动画执行状态
+    private boolean isAnimatorRun;
 
     /**
      * 就绪状态：预览区域显示完毕，但是没有连接图像
@@ -272,7 +284,14 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         mScanPaint.setDither(true);
         // to do
 
-        mPreviewState = PreviewState.DETECTING;
+        mTextPaint = new Paint();
+        mTextPaint.setAntiAlias(true);
+        mTextPaint.setDither(true);
+        mTextPaint.setTextSize(mTipTextSize * density);
+        mTextPaint.setColor(mTipTextColor);
+
+        mPreviewState = PreviewState.READY;
+        mShowTip = true;
         setKeepScreenOn(true);
     }
 
@@ -323,13 +342,35 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
-        // 创建并开始绘制线程
+        // 创建并开启绘制线程
         if (mDrawTread == null) {
             mDrawTread = new Thread(this);
-            isDrawRun = true;
-            updatePreviewState();
             mDrawTread.start();
         }
+
+        // 创建并开启扫描动画
+        if (mScanAnimator == null) {
+            initScanAnimator();
+            isAnimatorRun = true;
+            updatePreviewState();
+            mScanAnimator.start();
+        }
+    }
+
+    @Override
+    public void run() {
+        // 只负责绘制双缓冲背景
+        drawBackground();
+        if (mShowTip) {
+            new Timer().schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    mShowTip = false;
+                    drawBackground();
+                }
+            }, 10000);
+        }
+        isDrawRun = false;
     }
 
     @Override
@@ -340,27 +381,72 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         try {
-            isDrawRun = false;
-            updatePreviewState();
-            mDrawTread.interrupt();
+            // 停止背景绘制线程
             mDrawTread = null;
+
+            // 停止扫描动画
+            isAnimatorRun = false;
+            updatePreviewState();
+            mScanAnimator.end();
+            mScanAnimator = null;
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    @Override
-    public void run() {
+    /**
+     * 初始化扫描动画
+     */
+    private void initScanAnimator() {
+        float left = mRect.left + DEFAULT_CORNER_LENGTH / 2;
+        float right = mRect.right - DEFAULT_CORNER_LENGTH / 2;
+        final RectF oval = new RectF(left, 0, right, 0);
+        final int shortAxis = 5;
+
+        PropertyValuesHolder lineValues = PropertyValuesHolder.ofFloat("down", mRect.top + 5, mRect.bottom - 5);
+        mScanAnimator = ValueAnimator.ofPropertyValuesHolder(lineValues);
+        mScanAnimator.setDuration(3000);
+        mScanAnimator.setRepeatMode(ValueAnimator.RESTART);
+        mScanAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        mScanAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+        mScanAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                float centerY = obj2Float(animation.getAnimatedValue("down"));
+                oval.top = centerY - shortAxis;
+                oval.bottom = centerY + shortAxis;
+                // 此处只锁定矩形框的绘制区域即可，否则会有轻微闪烁
+                mCanvas = mHolder.lockCanvas(new Rect((int) mRect.left, (int) mRect.top, (int) mRect.right,(int) mRect.bottom));
+//                mCanvas = mHolder.lockCanvas();
+                if (mCanvas != null) {
+                    draw();
+                    mScanPaint.setShader(new RadialGradient(oval.centerX(), oval.centerY(), oval.width() / 2,
+                            Color.argb(200, 0, 255, 0), Color.argb(0, 0, 255, 0),
+                            Shader.TileMode.REPEAT));
+                    mCanvas.drawOval(oval, mScanPaint);
+                    mHolder.unlockCanvasAndPost(mCanvas);
+                }
+            }
+        });
+    }
+
+    /**
+     * 绘制背景
+     */
+    private void drawBackground() {
         // 绘制矩形以及边角,因为双缓冲，所以绘制两次背景
         for (int i = 0;i < 2;i++) {
             mCanvas = mHolder.lockCanvas();
-//            clearCanvas(mCanvas);
+            clearCanvas(mCanvas);
             // 绘制整个Canvas的背景色
-            mCanvas.drawARGB(100, 0, 0, 0);
+            mCanvas.drawARGB(150, 0, 0, 0);
+            if (mShowTip) {
+                Rect textBounds = new Rect();
+                mTextPaint.getTextBounds(mTipText, 0, mTipText.length(), textBounds);
+                mCanvas.drawText(mTipText, mRect.centerX() - textBounds.width() / 2 ,mRect.bottom + textMarginRect + textBounds.height() / 2, mTextPaint);
+            }
             mHolder.unlockCanvasAndPost(mCanvas);
         }
-        // 绘制扫描动画
-        drawScan();
     }
 
     // 清空画布操作,参数为锁定的画布
@@ -403,43 +489,47 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         mCanvas.drawLine(mRect.left, mRect.bottom, mRect.left, mRect.bottom - DEFAULT_CORNER_LENGTH, mCrnPaint);
     }
 
-    private void drawScan() {
-        while (isDrawRun) {
-            // 每次前进的距离
-            float delta = 3;
-            float left = mRect.left + DEFAULT_CORNER_LENGTH / 2;
-            float right = mRect.right - DEFAULT_CORNER_LENGTH / 2;
-            float top = mRect.top;
-            float bottom = mRect.top + 8;
-            RectF oval = new RectF(left, top, right, bottom);
+//    private void drawScan() {
+//        while (isDrawRun) {
+//            // 每次前进的距离
+//            float delta = 3;
+//            float left = mRect.left + DEFAULT_CORNER_LENGTH / 2;
+//            float right = mRect.right - DEFAULT_CORNER_LENGTH / 2;
+//            float top = mRect.top;
+//            float bottom = mRect.top + 8;
+//            RectF oval = new RectF(left, top, right, bottom);
+//
+//            while (mPreviewState == PreviewState.DETECTING) {
+//                oval.top = top;
+//                oval.bottom = bottom;
+//                mCanvas = mHolder.lockCanvas(new Rect((int) mRect.left, (int) mRect.top, (int) mRect.right,(int) mRect.bottom));
+//                if (mCanvas != null) {
+//                    draw();
+//                    mScanPaint.setShader(new RadialGradient(oval.centerX(), oval.centerY(), oval.width() / 2,
+//                            Color.argb(255, 0, 255, 0), Color.argb(0, 0, 255, 0),
+//                            Shader.TileMode.REPEAT));
+//                    mCanvas.drawOval(oval, mScanPaint);
+//                    mHolder.unlockCanvasAndPost(mCanvas);
+//                }
+//                try {
+//                    if (!mDrawTread.isInterrupted())
+//                        Thread.sleep(10);
+//                } catch (InterruptedException e) {
+//                    e.printStackTrace();
+//                }
+//                if (bottom >= mRect.bottom - 5) {
+//                    top = mRect.top;
+//                    bottom = top + 8;
+//                } else {
+//                    top += delta;
+//                    bottom += delta;
+//                }
+//            }
+//        }
+//    }
 
-            while (mPreviewState == PreviewState.DETECTING) {
-                oval.top = top;
-                oval.bottom = bottom;
-                mCanvas = mHolder.lockCanvas(new Rect((int) mRect.left, (int) mRect.top, (int) mRect.right,(int) mRect.bottom));
-                if (mCanvas != null) {
-                    draw();
-                    mScanPaint.setShader(new RadialGradient(oval.centerX(), oval.centerY(), oval.width() / 2,
-                            Color.argb(255, 0, 255, 0), Color.argb(0, 0, 255, 0),
-                            Shader.TileMode.REPEAT));
-                    mCanvas.drawOval(oval, mScanPaint);
-                    mHolder.unlockCanvasAndPost(mCanvas);
-                }
-                try {
-                    if (!mDrawTread.isInterrupted())
-                        Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-                if (bottom >= mRect.bottom - 5) {
-                    top = mRect.top;
-                    bottom = top + 8;
-                } else {
-                    top += delta;
-                    bottom += delta;
-                }
-            }
-        }
+    private float obj2Float(Object o) {
+        return ((Number) o).floatValue();
     }
 
     public void setChangeListener(OnPreviewChangeListener changeListener) {
@@ -467,7 +557,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     private void updatePreviewState() {
-        if (isDrawRun) {
+        if (isAnimatorRun) {
             switch (mPreviewState) {
                 case READY:
                 case PAUSE:
