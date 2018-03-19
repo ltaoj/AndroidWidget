@@ -1,6 +1,7 @@
 # AndroidWidget
 Useful Android Widget Library
 1. SwipeLayout 用于实现RecyclerView实现Item侧滑效果
+2. FacePreview 用于摄像头扫描 （2018年3月19日 新增）
 
 # 效果图
 
@@ -12,7 +13,7 @@ Useful Android Widget Library
 
 ```
 dependencies {
-  compile 'cn.ltaoj.widget:widget:0.9.7'
+  compile 'cn.ltaoj.widget:widget:0.9.8'
 }
 ```
 
