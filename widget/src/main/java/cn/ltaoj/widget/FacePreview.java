@@ -86,6 +86,8 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     private int mTipTextColor;
     // 提示文字顶部与矩形区域底部的距离
     private int textMarginRect = 50;
+    // 文字实际大小
+    private Rect textBounds;
 
     // 是否显示提示文字
     private boolean mShowTip;
@@ -164,9 +166,9 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     /**
-     * 显示区域属性配置类
+     * 显示区域属性配置类,静态内部类
      */
-    class PreviewConfig {
+    public static class PreviewConfig {
         // 区域形状，宽高
         float previewWidth;
         float previewHeight;
@@ -289,6 +291,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         mTextPaint.setDither(true);
         mTextPaint.setTextSize(mTipTextSize * density);
         mTextPaint.setColor(mTipTextColor);
+        mTextPaint.setTextAlign(Paint.Align.CENTER);
 
         mPreviewState = PreviewState.READY;
         mShowTip = true;
@@ -358,7 +361,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     @Override
-    public void run() {
+    public final void run() {
         // 只负责绘制双缓冲背景
         drawBackground();
         if (mShowTip) {
@@ -366,7 +369,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
                 @Override
                 public void run() {
                     mShowTip = false;
-                    drawBackground();
+                    sweepTipText();
                 }
             }, 10000);
         }
@@ -374,12 +377,12 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    public final void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
 
     }
 
     @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
+    public final void surfaceDestroyed(SurfaceHolder holder) {
         try {
             // 停止背景绘制线程
             mDrawTread = null;
@@ -441,10 +444,27 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
             // 绘制整个Canvas的背景色
             mCanvas.drawARGB(150, 0, 0, 0);
             if (mShowTip) {
-                Rect textBounds = new Rect();
-                mTextPaint.getTextBounds(mTipText, 0, mTipText.length(), textBounds);
-                mCanvas.drawText(mTipText, mRect.centerX() - textBounds.width() / 2 ,mRect.bottom + textMarginRect + textBounds.height() / 2, mTextPaint);
+                drawTipText();
             }
+            mHolder.unlockCanvasAndPost(mCanvas);
+        }
+    }
+
+    private void drawTipText() {
+        textBounds = new Rect();
+        mTextPaint.getTextBounds(mTipText, 0, mTipText.length(), textBounds);
+        // 绘制时bug，y为baseline坐标
+        mCanvas.drawText(mTipText, mRect.centerX() ,mRect.bottom + textMarginRect + textBounds.height(), mTextPaint);
+    }
+
+    private void sweepTipText() {
+        // 由于精度转换，可能边框显示未擦除
+        Rect rect = new Rect((int)(mRect.centerX() - textBounds.width() / 2.0f),(int)(mRect.bottom + textMarginRect),
+                (int)(mRect.centerX() + textBounds.width() / 2.0f),(int)(mRect.bottom + textMarginRect + textBounds.height() + 5));
+        for (int i = 0;i < 2;i++) {
+            mCanvas = mHolder.lockCanvas(rect);
+            mCanvas.drawPaint(mRectPaint);
+            mCanvas.drawARGB(150, 0, 0, 0);
             mHolder.unlockCanvasAndPost(mCanvas);
         }
     }
@@ -554,6 +574,10 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
                     break;
             }
         }
+    }
+
+    public RectF getRect() {
+        return mRect;
     }
 
     private void updatePreviewState() {
