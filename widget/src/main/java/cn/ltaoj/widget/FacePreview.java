@@ -15,7 +15,8 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.os.Build;
-import android.support.annotation.RequiresApi;
+import android.os.Handler;
+import android.os.Message;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.view.SurfaceHolder;
@@ -33,7 +34,7 @@ import java.util.TimerTask;
  */
 
 public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, Runnable {
-    private static final String TAG = "CameraPreview";
+    private static final String TAG = "FacePreview";
 
     // 默认矩形宽度
     private static final float DEFAULT_PREVIEW_WIDTH = 240;
@@ -135,6 +136,34 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     // 表示是否更新Animator的ProperHolder
     private boolean needChangeAnimator;
 
+    private static final int MSG_CREATE = 0;
+    private static final int MSG_PAUSE = 1;
+    private static final int MSG_RESTART = 2;
+    private static final int MSG_DESTROY = 3;
+
+    // 用于处理暂停，重启动画的消息
+    private Handler mHandler = new Handler(new Handler.Callback() {
+        @Override
+        public boolean handleMessage(Message msg) {
+            switch (msg.what) {
+                case MSG_CREATE:
+                    show();
+                    break;
+                case MSG_PAUSE:
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                        mScanAnimator.pause();
+                    }
+                    break;
+                case MSG_RESTART:
+                    mScanAnimator.start();
+                    break;
+                case MSG_DESTROY:
+                    stop();
+                    break;
+            }
+            return true;
+        }
+    });
     /**
      * 就绪状态：预览区域显示完毕，但是没有连接图像
      * 检测状态：预览区域出现状态，并且伴随检测一些动画提示
@@ -211,6 +240,12 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         initPreview();
     }
 
+    /**
+     * 从组件所在的布局文件读取设置的属性，并初始化相关成员变量
+     * @param context
+     * @param attrs
+     * @param defStyleAttr
+     */
     private void initAttrs(Context context, AttributeSet attrs, int defStyleAttr) {
         TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.FacePreview, defStyleAttr, 0);
         DisplayMetrics dm = context.getResources().getDisplayMetrics();
@@ -264,6 +299,11 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         a.recycle();
     }
 
+    /**
+     * 初始化组件相关成员配置
+     * 初始化画笔
+     * 默认组件配置
+     */
     private void initPreview() {
         if (mConfigs == null) {
             mConfigs = new ArrayList<PreviewConfig>();
@@ -308,6 +348,11 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         setKeepScreenOn(true);
     }
 
+    /**
+     * 通过设置的组件大小，计算在屏幕中的位置
+     * @param previewWidth
+     * @param previewHeight
+     */
     private void computeRect(float previewWidth, float previewHeight) {
         mRect.left = (screenWidth - previewWidth) / 2;
         mRect.right = (screenWidth + previewWidth) / 2;
@@ -315,6 +360,11 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         mRect.bottom = (screenHeight + previewHeight) / 2;
     }
 
+    /**
+     * 组件提供的外部接口
+     * 设置界面配置集合
+     * @param configs
+     */
     public void setPreviewConfigs(List<PreviewConfig> configs) {
         if (configs != null && configs.size() > 0) {
             mConfigs = configs;
@@ -323,6 +373,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     /**
+     * 组件提供的外部接口
      * 应用界面设置的方法
      * 设置内容包括矩形框大小
      * 提示文字内容、是否显示
@@ -369,24 +420,6 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        // 创建并开启绘制线程
-        if (mDrawTread == null) {
-            isDrawRun = true;
-            mDrawTread = new Thread(this);
-            mDrawTread.start();
-        }
-
-        // 创建并开启扫描动画
-        if (mScanAnimator == null) {
-            initScanAnimator();
-            isAnimatorRun = true;
-            updatePreviewState();
-            mScanAnimator.start();
-        }
-    }
-
-    @Override
     public final void run() {
         Timer timer = null;
         while (isDrawRun) {
@@ -395,8 +428,10 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
                 drawBackground();
             }
 
-            if (mShowTip) { // 是否需要绘制提示文字
-                if (!hasSweepTip) { // 是否需要擦除上次绘制的提示文字
+            // 绘制提示文字,如果扫描动画没有加载，那么即使设置提示文字也无效
+            if (mShowTip && mScanAnimator != null) {
+                // 擦除上次绘制的提示文字
+                if (!hasSweepTip) {
                     sweepTipText();
                 }
 
@@ -421,29 +456,28 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     @Override
+    public void surfaceCreated(SurfaceHolder holder) {
+        // 创建并开启绘制线程
+        if (mDrawTread == null) {
+            isDrawRun = true;
+            mDrawTread = new Thread(this);
+            mDrawTread.start();
+        }
+
+        // 发送创建消息，开始扫描动画
+        show();
+    }
+
+    @Override
     public final void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
 
     }
 
     @Override
     public final void surfaceDestroyed(SurfaceHolder holder) {
-        try {
-            // 停止背景绘制线程
-            isDrawRun = false;
-            mDrawTread.interrupt();
-            mDrawTread = null;
-
-            // 停止扫描动画
-            isAnimatorRun = false;
-            updatePreviewState();
-            mScanAnimator.end();
-            mScanAnimator = null;
-
-            // 设置下次启动时
-            shouldRedrawBg = true;
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        Message msg = new Message();
+        msg.what = MSG_DESTROY;
+        mHandler.sendMessage(msg);
     }
 
     /**
@@ -487,6 +521,42 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     }
 
     /**
+     * 创建显示扫描动画
+     */
+    private void show() {
+        // 创建并开启扫描动画
+        if (mScanAnimator == null) {
+            initScanAnimator();
+            isAnimatorRun = true;
+            updatePreviewState();
+            mScanAnimator.start();
+        }
+    }
+
+    /**
+     * 停止绘制线程以及动画
+     */
+    private void stop() {
+        try {
+            // 停止背景绘制线程
+            isDrawRun = false;
+            mDrawTread.interrupt();
+            mDrawTread = null;
+
+            // 停止扫描动画
+            isAnimatorRun = false;
+            updatePreviewState();
+            mScanAnimator.end();
+            mScanAnimator = null;
+
+            // 设置下次启动时，重新绘制背景
+            shouldRedrawBg = true;
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
      * 负责更新扫描动画属性
      */
     private void changeAnimatorProperty() {
@@ -503,12 +573,16 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     private void drawBackground() {
         // 绘制矩形以及边角,因为双缓冲，所以绘制两次背景
         for (int i = 0;i < 2;i++) {
-            mCanvas = mHolder.lockCanvas();
-            if (mCanvas != null) {
-                clearCanvas(mCanvas);
-                // 绘制整个Canvas的背景色
-                mCanvas.drawARGB(150, 0, 0, 0);
-                mHolder.unlockCanvasAndPost(mCanvas);
+            try {
+                mCanvas = mHolder.lockCanvas();
+                if (mCanvas != null) {
+//                    clearCanvas(mCanvas);
+                    // 绘制整个Canvas的背景色
+                    mCanvas.drawARGB(200, 0, 0, 0);
+                    mHolder.unlockCanvasAndPost(mCanvas);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         }
 
@@ -562,7 +636,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
                 mCanvas = mHolder.lockCanvas(rect);
                 if (mCanvas != null) {
                     mCanvas.drawPaint(mRectPaint);
-                    mCanvas.drawARGB(150, 0, 0, 0);
+                    mCanvas.drawARGB(200, 0, 0, 0);
                     mHolder.unlockCanvasAndPost(mCanvas);
                 }
             } catch (Exception e) {
@@ -661,24 +735,51 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         this.mChangeListener = changeListener;
     }
 
-    public void setPreviewState(PreviewState previewState) {
+    private void setPreviewState(PreviewState previewState) {
         if (mPreviewState != previewState) {
             mPreviewState = previewState;
-//            switch (previewState) {
-//                case READY:
+            Message msg = null;
+            switch (previewState) {
+                case READY:
 //                    mChangeListener.onReady();
-//                    break;
-//                case DETECTING:
+                    break;
+                case DETECTING:
 //                    mChangeListener.onDetecting();
-//                    break;
-//                case PAUSE:
+                    msg = new Message();
+                    if (mScanAnimator == null) {
+                        msg.what = MSG_CREATE;
+                    } else {
+                        msg.what = MSG_RESTART;
+                    }
+                    break;
+                case PAUSE:
+                    msg = new Message();
+                    msg.what = MSG_PAUSE;
 //                    mChangeListener.onPause();
-//                    break;
-//                case COMPLETE:
+                    break;
+                case COMPLETE:
 //                    mChangeListener.onComplete();
-//                    break;
-//            }
+                    break;
+            }
+
+            if (msg != null) {
+                mHandler.sendMessage(msg);
+            }
         }
+    }
+
+    /**
+     * 恢复检测
+     */
+    public void resumeDetect() {
+        setPreviewState(PreviewState.DETECTING);
+    }
+
+    /**
+     * 暂停检测
+     */
+    public void pauseDetect() {
+        setPreviewState(PreviewState.PAUSE);
     }
 
     /**
