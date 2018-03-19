@@ -4,7 +4,6 @@ import android.animation.PropertyValuesHolder;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.TypedArray;
-import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -15,9 +14,10 @@ import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.os.Build;
+import android.support.annotation.RequiresApi;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
-import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.animation.AccelerateDecelerateInterpolator;
@@ -121,10 +121,19 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     // 表示线程运行状态
     private boolean isDrawRun;
 
+    // 表示第一次绘制背景
+    private boolean firstDrawBg;
+    // 表示是否需要重新绘制背景
+    private boolean shouldRedrawBg;
+    // 表示上次提示文字时候擦除
+    private boolean hasSweepTip;
+
     // 扫描动画
     private ValueAnimator mScanAnimator;
     // 动画执行状态
     private boolean isAnimatorRun;
+    // 表示是否更新Animator的ProperHolder
+    private boolean needChangeAnimator;
 
     /**
      * 就绪状态：预览区域显示完毕，但是没有连接图像
@@ -295,6 +304,7 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
 
         mPreviewState = PreviewState.READY;
         mShowTip = true;
+        hasSweepTip = true;
         setKeepScreenOn(true);
     }
 
@@ -312,6 +322,13 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         }
     }
 
+    /**
+     * 应用界面设置的方法
+     * 设置内容包括矩形框大小
+     * 提示文字内容、是否显示
+     * 状态监听
+     * @param index
+     */
     public void applyConfig(int index) {
         if (index < 0 || index >= mConfigs.size()) {
             return;
@@ -337,16 +354,25 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         }
 
         mTipText = config.tipText;
-        mShowTip = config.showTip;
-
         curConfig = index;
+
         // 通知改变
+        if (mDrawTread != null) {
+            // 如果不是初始化，那么才会通知改变
+            // 重新绘制背景
+            // 重新设置动画属性
+            // 顺序为1、绘制背景 2、绘制提示文字 3、更新扫描动画属性
+            shouldRedrawBg = true;
+            mShowTip = config.showTip;
+            needChangeAnimator = true;
+        }
     }
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         // 创建并开启绘制线程
         if (mDrawTread == null) {
+            isDrawRun = true;
             mDrawTread = new Thread(this);
             mDrawTread.start();
         }
@@ -362,18 +388,36 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
 
     @Override
     public final void run() {
-        // 只负责绘制双缓冲背景
-        drawBackground();
-        if (mShowTip) {
-            new Timer().schedule(new TimerTask() {
-                @Override
-                public void run() {
-                    mShowTip = false;
+        Timer timer = null;
+        while (isDrawRun) {
+            if (!firstDrawBg || shouldRedrawBg) { // 当SurfaceView创建成功时或者收到重新绘制指令时
+                // 只负责绘制双缓冲背景
+                drawBackground();
+            }
+
+            if (mShowTip) { // 是否需要绘制提示文字
+                if (!hasSweepTip) { // 是否需要擦除上次绘制的提示文字
                     sweepTipText();
                 }
-            }, 10000);
+
+                drawTipText();
+                if (timer != null) {
+                    timer.cancel(); // 取消之前的定时任务
+                }
+                // 启动定时任务，10s后将提示文字擦除
+                timer = new Timer();
+                timer.schedule(new TimerTask() {
+                    @Override
+                    public void run() {
+                        sweepTipText();
+                    }
+                }, 10000);
+            }
+
+            if (needChangeAnimator) {
+                changeAnimatorProperty();
+            }
         }
-        isDrawRun = false;
     }
 
     @Override
@@ -385,6 +429,8 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     public final void surfaceDestroyed(SurfaceHolder holder) {
         try {
             // 停止背景绘制线程
+            isDrawRun = false;
+            mDrawTread.interrupt();
             mDrawTread = null;
 
             // 停止扫描动画
@@ -392,6 +438,9 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
             updatePreviewState();
             mScanAnimator.end();
             mScanAnimator = null;
+
+            // 设置下次启动时
+            shouldRedrawBg = true;
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -419,54 +468,53 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
                 oval.top = centerY - shortAxis;
                 oval.bottom = centerY + shortAxis;
                 // 此处只锁定矩形框的绘制区域即可，否则会有轻微闪烁
-                mCanvas = mHolder.lockCanvas(new Rect((int) mRect.left, (int) mRect.top, (int) mRect.right,(int) mRect.bottom));
+                try {
+                    mCanvas = mHolder.lockCanvas(new Rect((int) mRect.left, (int) mRect.top, (int) mRect.right,(int) mRect.bottom));
 //                mCanvas = mHolder.lockCanvas();
-                if (mCanvas != null) {
-                    draw();
-                    mScanPaint.setShader(new RadialGradient(oval.centerX(), oval.centerY(), oval.width() / 2,
-                            Color.argb(200, 0, 255, 0), Color.argb(0, 0, 255, 0),
-                            Shader.TileMode.REPEAT));
-                    mCanvas.drawOval(oval, mScanPaint);
-                    mHolder.unlockCanvasAndPost(mCanvas);
+                    if (mCanvas != null) {
+                        drawRectACrn();
+                        mScanPaint.setShader(new RadialGradient(oval.centerX(), oval.centerY(), oval.width() / 2,
+                                Color.argb(200, 0, 255, 0), Color.argb(0, 0, 255, 0),
+                                Shader.TileMode.REPEAT));
+                        mCanvas.drawOval(oval, mScanPaint);
+                        mHolder.unlockCanvasAndPost(mCanvas);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
             }
         });
     }
 
     /**
-     * 绘制背景
+     * 负责更新扫描动画属性
+     */
+    private void changeAnimatorProperty() {
+        PropertyValuesHolder values = PropertyValuesHolder.ofFloat("down", mRect.top + 5, mRect.bottom - 5);
+        mScanAnimator.setValues(values);
+
+        // 更新标志位
+        needChangeAnimator = false;
+    }
+
+    /**
+     * 负责绘制背景
      */
     private void drawBackground() {
         // 绘制矩形以及边角,因为双缓冲，所以绘制两次背景
         for (int i = 0;i < 2;i++) {
             mCanvas = mHolder.lockCanvas();
-            clearCanvas(mCanvas);
-            // 绘制整个Canvas的背景色
-            mCanvas.drawARGB(150, 0, 0, 0);
-            if (mShowTip) {
-                drawTipText();
+            if (mCanvas != null) {
+                clearCanvas(mCanvas);
+                // 绘制整个Canvas的背景色
+                mCanvas.drawARGB(150, 0, 0, 0);
+                mHolder.unlockCanvasAndPost(mCanvas);
             }
-            mHolder.unlockCanvasAndPost(mCanvas);
         }
-    }
 
-    private void drawTipText() {
-        textBounds = new Rect();
-        mTextPaint.getTextBounds(mTipText, 0, mTipText.length(), textBounds);
-        // 绘制时bug，y为baseline坐标
-        mCanvas.drawText(mTipText, mRect.centerX() ,mRect.bottom + textMarginRect + textBounds.height(), mTextPaint);
-    }
-
-    private void sweepTipText() {
-        // 由于精度转换，可能边框显示未擦除
-        Rect rect = new Rect((int)(mRect.centerX() - textBounds.width() / 2.0f),(int)(mRect.bottom + textMarginRect),
-                (int)(mRect.centerX() + textBounds.width() / 2.0f),(int)(mRect.bottom + textMarginRect + textBounds.height() + 5));
-        for (int i = 0;i < 2;i++) {
-            mCanvas = mHolder.lockCanvas(rect);
-            mCanvas.drawPaint(mRectPaint);
-            mCanvas.drawARGB(150, 0, 0, 0);
-            mHolder.unlockCanvasAndPost(mCanvas);
-        }
+        // 绘制成功后将重置相关标志位
+        firstDrawBg = true;
+        shouldRedrawBg = false;
     }
 
     // 清空画布操作,参数为锁定的画布
@@ -476,37 +524,94 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
         canvas.drawPaint(paint);
     }
 
-    private void draw() {
-        // 绘制矩形框
-        mCanvas.drawRect(mRect, mRectPaint);
+    /**
+     * 负责绘制提示文字
+     * 在绘制文字之前确保mRect已经更新
+     */
+    private void drawTipText() {
+        textBounds = new Rect();
+        mTextPaint.getTextBounds(mTipText, 0, mTipText.length(), textBounds);
+        for (int i = 0;i < 2;i++) {
+            try {
+                mCanvas = mHolder.lockCanvas();
+                // 绘制时bug，y为baseline坐标
+                if (mCanvas != null) {
+                    mCanvas.drawText(mTipText, mRect.centerX(), mRect.bottom + textMarginRect + textBounds.height(), mTextPaint);
+                    mHolder.unlockCanvasAndPost(mCanvas);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
 
-        /**
-         * |----左上角
-         * |
-         */
-        mCanvas.drawLine(mRect.left, mRect.top + DEFAULT_CORNER_LENGTH, mRect.left, mRect.top, mCrnPaint);
-        mCanvas.drawLine(mRect.left, mRect.top, mRect.left + DEFAULT_CORNER_LENGTH, mRect.top, mCrnPaint);
+        // 更新相关标志位
+        mShowTip = false;
+        hasSweepTip = false;
+    }
 
-        /**
-         * -----| 右上角
-         *      |
-         */
-        mCanvas.drawLine(mRect.right - DEFAULT_CORNER_LENGTH, mRect.top, mRect.right, mRect.top, mCrnPaint);
-        mCanvas.drawLine(mRect.right, mRect.top, mRect.right, mRect.top + DEFAULT_CORNER_LENGTH, mCrnPaint);
+    /**
+     * 负责擦除文字
+     * 擦出文字的区域是根据mRect以及旧的文字算出来，所以在重新设置新的提示文字之前，应该先擦除提示文字
+     */
+    private void sweepTipText() {
+        // 由于精度转换，可能边框显示未擦除
+        Rect rect = new Rect((int)(mRect.centerX() - textBounds.width() / 2.0f),(int)(mRect.bottom + textMarginRect),
+                (int)(mRect.centerX() + textBounds.width() / 2.0f),(int)(mRect.bottom + textMarginRect + textBounds.height() + 5));
+        for (int i = 0;i < 2;i++) {
+            try {
+                mCanvas = mHolder.lockCanvas(rect);
+                if (mCanvas != null) {
+                    mCanvas.drawPaint(mRectPaint);
+                    mCanvas.drawARGB(150, 0, 0, 0);
+                    mHolder.unlockCanvasAndPost(mCanvas);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
 
-        /**
-         *      | 右下角
-         * -----|
-         */
-        mCanvas.drawLine(mRect.right, mRect.bottom - DEFAULT_CORNER_LENGTH, mRect.right, mRect.bottom, mCrnPaint);
-        mCanvas.drawLine(mRect.right, mRect.bottom, mRect.right - DEFAULT_CORNER_LENGTH, mRect.bottom, mCrnPaint);
+        // 更新标志位
+        hasSweepTip = true;
+    }
 
-        /**
-         * |      左下角
-         * |-----
-         */
-        mCanvas.drawLine(mRect.left + DEFAULT_CORNER_LENGTH, mRect.bottom, mRect.left, mRect.bottom, mCrnPaint);
-        mCanvas.drawLine(mRect.left, mRect.bottom, mRect.left, mRect.bottom - DEFAULT_CORNER_LENGTH, mCrnPaint);
+    /**
+     * 负责绘制矩形区域以及边角
+     * 需要确保已经获取锁定的Canvas
+     * 此方法用在lockCanvas和UnlockCanvas之间
+     */
+    private void drawRectACrn() {
+        if (mCanvas != null) {
+            // 绘制矩形框
+            mCanvas.drawRect(mRect, mRectPaint);
+
+            /**
+             * |----左上角
+             * |
+             */
+            mCanvas.drawLine(mRect.left, mRect.top + DEFAULT_CORNER_LENGTH, mRect.left, mRect.top, mCrnPaint);
+            mCanvas.drawLine(mRect.left, mRect.top, mRect.left + DEFAULT_CORNER_LENGTH, mRect.top, mCrnPaint);
+
+            /**
+             * -----| 右上角
+             *      |
+             */
+            mCanvas.drawLine(mRect.right - DEFAULT_CORNER_LENGTH, mRect.top, mRect.right, mRect.top, mCrnPaint);
+            mCanvas.drawLine(mRect.right, mRect.top, mRect.right, mRect.top + DEFAULT_CORNER_LENGTH, mCrnPaint);
+
+            /**
+             *      | 右下角
+             * -----|
+             */
+            mCanvas.drawLine(mRect.right, mRect.bottom - DEFAULT_CORNER_LENGTH, mRect.right, mRect.bottom, mCrnPaint);
+            mCanvas.drawLine(mRect.right, mRect.bottom, mRect.right - DEFAULT_CORNER_LENGTH, mRect.bottom, mCrnPaint);
+
+            /**
+             * |      左下角
+             * |-----
+             */
+            mCanvas.drawLine(mRect.left + DEFAULT_CORNER_LENGTH, mRect.bottom, mRect.left, mRect.bottom, mCrnPaint);
+            mCanvas.drawLine(mRect.left, mRect.bottom, mRect.left, mRect.bottom - DEFAULT_CORNER_LENGTH, mCrnPaint);
+        }
     }
 
 //    private void drawScan() {
@@ -559,23 +664,27 @@ public class FacePreview extends SurfaceView implements SurfaceHolder.Callback, 
     public void setPreviewState(PreviewState previewState) {
         if (mPreviewState != previewState) {
             mPreviewState = previewState;
-            switch (previewState) {
-                case READY:
-                    mChangeListener.onReady();
-                    break;
-                case DETECTING:
-                    mChangeListener.onDetecting();
-                    break;
-                case PAUSE:
-                    mChangeListener.onPause();
-                    break;
-                case COMPLETE:
-                    mChangeListener.onComplete();
-                    break;
-            }
+//            switch (previewState) {
+//                case READY:
+//                    mChangeListener.onReady();
+//                    break;
+//                case DETECTING:
+//                    mChangeListener.onDetecting();
+//                    break;
+//                case PAUSE:
+//                    mChangeListener.onPause();
+//                    break;
+//                case COMPLETE:
+//                    mChangeListener.onComplete();
+//                    break;
+//            }
         }
     }
 
+    /**
+     * 返回矩形框在屏幕中的位置
+     * @return
+     */
     public RectF getRect() {
         return mRect;
     }
